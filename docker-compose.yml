@@ -1,0 +1,81 @@
+version: '3'
+
+services:
+  artwork_app: &php
+    build:
+      context: .  # Das aktuelle Verzeichnis (Dockerfile liegt hier)
+      dockerfile: ./docker/php/php.Dockerfile
+    working_dir: '/var/www/html'
+    env_file:
+      - .env
+    user: '${PHP_USER:-www-data}:${PHP_USER_GROUP:-www-data}'
+    depends_on:
+      - db
+      - soketi
+    networks:
+      - artwork
+    volumes:
+      - './.env:/var/www/html/.env'
+      - 'app-data:/var/www/html/public'
+  artwork_scheduler:
+    <<: *php
+    command: yacron -c schedule.yaml
+  artwork_worker: 
+    <<: *php
+    command: php artisan queue:work
+  redis:
+    image: redis
+    networks:
+      - artwork
+  db:
+    build:
+      context: .
+      dockerfile: ./docker/mariadb/mysql.Dockerfile
+    container_name: artwork_db
+    env_file:
+      - .env
+    volumes:
+      - 'db-data:/var/lib/mysql:delegated'
+    networks:
+      - artwork
+  soketi:
+    image: 'quay.io/soketi/soketi:latest-16-alpine'
+    env_file:
+      - .env
+    ports:
+      - '${PUSHER_PORT:-6001}:6001'
+      - '${PUSHER_METRICS_PORT:-9601}:9601'
+    networks:
+      - artwork
+        
+  webserver:
+    build:
+      context: .
+      dockerfile: ./docker/nginx/nginx.Dockerfile
+    container_name: artwork_webserver
+    ports:
+      - '${HTTP_EXPOSED_PORT:-80}:80'
+      - '${HTTPS_EXPOSED_PORT:-443}:443'
+    volumes:
+      - './docker/nginx/nginx.vhost.conf:/etc/nginx/conf.d/default.conf'
+      - ./data/certbot/conf:/etc/letsencrypt
+      - ./data/certbot/www:/var/www/certbot
+      - 'app-data:/var/www/html/public:ro'
+    command: "/bin/sh -c 'while :; do sleep 6h & wait $${!}; nginx -s reload; done & nginx -g \"daemon off;\"'"
+    depends_on:
+      - artwork_app
+    networks:
+      - artwork
+  certbot:
+    image: certbot/certbot
+    volumes:
+      - ./data/certbot/conf:/etc/letsencrypt
+      - ./data/certbot/www:/var/www/certbot
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+networks:
+  artwork:
+    driver: bridge
+
+volumes:
+  db-data:
+  app-data:
